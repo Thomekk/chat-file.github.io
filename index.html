@@ -109,16 +109,15 @@ button svg{width:20px;height:20px}
   </button>
 </footer>
 
-<!-- ResponsiveVoice как один из резервных вариантов -->
+<!-- ResponsiveVoice как резервный вариант (если Web Speech недоступен) -->
 <script src="https://code.responsivevoice.org/responsivevoice.js?key=FREE"></script>
 
 <script>
 /* =========================================================
-   Многоуровневая озвучка:
-   1) Web Speech API        (Chrome, Edge, Safari)
-   2) Google Translate TTS  (fallback через <audio>)
-   3) ResponsiveVoice       (если загрузился скрипт)
-   4) Визуальный сигнал     (когда ничего не работает)
+   Озвучка:
+   1) Web Speech API    (Chrome, Edge, Safari — основной)
+   2) ResponsiveVoice   (резерв, если Web Speech не завёлся)
+   3) Визуальный сигнал (когда звука нет вообще)
    ========================================================= */
 
 const chat   = document.getElementById('chat');
@@ -129,25 +128,22 @@ const status = document.getElementById('status');
 const pad  = n => String(n).padStart(2,'0');
 const time = () => { const d = new Date(); return pad(d.getHours())+':'+pad(d.getMinutes()); };
 
-/* ---------- Определяем доступные движки ---------- */
+/* ---------- Доступные движки ---------- */
 const synth = window.speechSynthesis;
-const hasWebSpeech = !!(synth && typeof SpeechSynthesisUtterance !== 'undefined');
+const hasWebSpeech  = !!(synth && typeof SpeechSynthesisUtterance !== 'undefined');
 const hasResponsive = typeof responsiveVoice !== 'undefined';
 
 let currentEngine = hasWebSpeech ? 'webspeech'
                   : hasResponsive ? 'responsive'
-                  : 'google';   // google пробуем даже без явной проверки
+                  : 'visual';
 
 status.textContent = 'озвучка: ' + currentEngine;
 
-/* ---------- Текущий проигрываемый аудиоэлемент ---------- */
-let currentAudio = null;
 let currentBubble = null;
 
 function stopAll(){
   try { if (synth) synth.cancel(); } catch(e){}
   try { if (hasResponsive) responsiveVoice.cancel(); } catch(e){}
-  if (currentAudio){ currentAudio.pause(); currentAudio = null; }
   if (currentBubble) currentBubble.classList.remove('speaking');
 }
 
@@ -166,7 +162,7 @@ function markDone(bubble){
 function speakWebSpeech(text, bubble, onFail){
   if (!hasWebSpeech){ onFail(); return; }
 
-  let voices = synth.getVoices();
+  const voices = synth.getVoices();
 
   const doSpeak = () => {
     try {
@@ -181,20 +177,14 @@ function speakWebSpeech(text, bubble, onFail){
 
       let started = false;
       u.onstart = () => { started = true; markSpeaking(bubble); };
-
-      u.onend = () => { markDone(bubble); };
-
-      u.onerror = (ev) => {
-        // если речь даже не началась — переходим к следующему движку
-        if (!started) onFail();
-        else markDone(bubble);
-      };
+      u.onend   = () => { markDone(bubble); };
+      u.onerror = () => { if (!started) onFail(); else markDone(bubble); };
 
       synth.speak(u);
 
-      // страховка: если через 700мс речь так и не стартовала — движок не работает
+      // если через 700 мс речь не началась — движок не работает
       setTimeout(() => {
-        if (!started && !synth.speaking){ onFail(); }
+        if (!started && !synth.speaking) onFail();
       }, 700);
 
     } catch(e){ onFail(); }
@@ -203,7 +193,7 @@ function speakWebSpeech(text, bubble, onFail){
   if (voices && voices.length){
     doSpeak();
   } else {
-    // в некоторых браузерах голоса подгружаются асинхронно
+    // голоса иногда подгружаются асинхронно
     let done = false;
     const handler = () => {
       if (done) return; done = true;
@@ -215,33 +205,7 @@ function speakWebSpeech(text, bubble, onFail){
   }
 }
 
-/* ---------- Движок 2: Google Translate TTS ---------- */
-function speakGoogle(text, bubble, onFail){
-  try {
-    const url = 'https://translate.google.com/translate_tts'
-      + '?ie=UTF-8&client=tw-ob&tl=ru&q=' + encodeURIComponent(text);
-
-    const audio = new Audio(url);
-    audio.crossOrigin = 'anonymous';
-    currentAudio = audio;
-
-    let started = false;
-    audio.onplay  = () => { started = true; markSpeaking(bubble); };
-    audio.onended = () => { markDone(bubble); currentAudio = null; };
-    audio.onerror = () => { if (!started) onFail(); else markDone(bubble); };
-
-    const p = audio.play();
-    if (p && p.catch){
-      p.catch(() => { if (!started) onFail(); });
-    }
-
-    // страховка
-    setTimeout(() => { if (!started) onFail(); }, 1200);
-
-  } catch(e){ onFail(); }
-}
-
-/* ---------- Движок 3: ResponsiveVoice ---------- */
+/* ---------- Движок 2: ResponsiveVoice ---------- */
 function speakResponsive(text, bubble, onFail){
   if (!hasResponsive){ onFail(); return; }
   try {
@@ -255,12 +219,11 @@ function speakResponsive(text, bubble, onFail){
   } catch(e){ onFail(); }
 }
 
-/* ---------- Движок 4: визуальный сигнал (последний шанс) ---------- */
+/* ---------- Движок 3: визуальный сигнал ---------- */
 function speakVisual(text, bubble){
   currentEngine = 'visual';
   status.textContent = 'озвучка недоступна — только визуально';
   markSpeaking(bubble);
-  // короткая вспышка длительностью пропорционально длине текста
   const ms = Math.min(4000, 350 + text.length * 45);
   setTimeout(() => markDone(bubble), ms);
 }
@@ -269,19 +232,16 @@ function speakVisual(text, bubble){
 function speak(text, bubble){
   stopAll();
 
-  const tryGoogle = () => speakGoogle(text, bubble, tryResponsive);
-  const tryResponsive = () => speakResponsive(text, bubble, () => speakVisual(text, bubble));
+  const fallbackToResponsive = () => {
+    currentEngine = 'responsive';
+    status.textContent = 'озвучка: responsive';
+    speakResponsive(text, bubble, () => speakVisual(text, bubble));
+  };
 
   if (currentEngine === 'webspeech'){
-    speakWebSpeech(text, bubble, () => {
-      currentEngine = 'google';
-      status.textContent = 'озвучка: google';
-      tryGoogle();
-    });
+    speakWebSpeech(text, bubble, fallbackToResponsive);
   } else if (currentEngine === 'responsive'){
-    speakResponsive(text, bubble, tryGoogle);
-  } else if (currentEngine === 'google'){
-    tryGoogle();
+    speakResponsive(text, bubble, () => speakVisual(text, bubble));
   } else {
     speakVisual(text, bubble);
   }
@@ -313,12 +273,12 @@ function sendMessage(){
 send.addEventListener('click', sendMessage);
 input.addEventListener('keydown', e => { if (e.key === 'Enter') sendMessage(); });
 
-/* прогреваем голоса Web Speech при первой загрузке */
+/* прогрев Web Speech при первой загрузке */
 if (hasWebSpeech){
   try { synth.getVoices(); synth.onvoiceschanged = () => synth.getVoices(); } catch(e){}
 }
 
-/* авто-тест движка: короткое беззвучное «прогревание» при первом клике */
+/* «прогрев» речи при первом касании — обходит автозапуск */
 let warmed = false;
 document.addEventListener('pointerdown', () => {
   if (warmed) return;
