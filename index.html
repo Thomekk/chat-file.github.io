@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Голосовой чат</title>
+<style>
+:root{
+  --bg:#0d0e12; --in:#1a1b21; --out:#2b2d6e;
+  --tx:#e8e8ee; --mut:#8a8a96; --acc:#6366f1;
+}
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{height:100%}
+body{
+  background:var(--bg);color:var(--tx);
+  font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  display:flex;flex-direction:column;
+  max-width:520px;margin:0 auto;height:100dvh;
+}
+header{
+  display:flex;align-items:center;gap:10px;
+  padding:14px 16px;border-bottom:1px solid #ffffff0d;flex-shrink:0;
+}
+header .dot{
+  width:9px;height:9px;border-radius:50%;background:#2ecc71;
+  box-shadow:0 0 8px #2ecc71;animation:pulse 1.8s infinite;
+}
+@keyframes pulse{50%{opacity:.35}}
+header b{font-weight:500;font-size:15px}
+header small{color:var(--mut);font-size:11px;margin-left:auto;text-align:right}
+
+#chat{
+  flex:1;overflow-y:auto;padding:16px 14px;
+  display:flex;flex-direction:column;gap:10px;
+  scrollbar-width:thin;scrollbar-color:#2a2a30 transparent;
+}
+#chat::-webkit-scrollbar{width:4px}
+#chat::-webkit-scrollbar-thumb{background:#2a2a30;border-radius:4px}
+
+.msg{
+  max-width:80%;padding:9px 13px;border-radius:16px;
+  font-size:15px;word-break:break-word;white-space:pre-wrap;
+  animation:pop .18s ease-out;
+}
+@keyframes pop{from{opacity:0;transform:translateY(6px)}}
+.msg.out{
+  align-self:flex-end;background:var(--out);
+  border-radius:16px 16px 4px 16px;
+  box-shadow:0 2px 12px #6366f144;
+}
+.msg.in{
+  align-self:flex-start;background:var(--in);
+  border-radius:16px 16px 16px 4px;
+  border:1px solid #ffffff0a;
+}
+.msg .time{
+  display:block;font-size:10px;color:var(--mut);
+  margin-top:3px;text-align:right;opacity:.7;
+}
+.msg.speaking{outline:1px solid var(--acc);outline-offset:2px}
+.msg.speaking::after{
+  content:"🔊";margin-left:6px;font-size:11px;
+  animation:pulse .8s infinite;
+}
+
+footer{
+  display:flex;align-items:center;gap:8px;
+  padding:10px 12px 14px;background:var(--bg);
+  border-top:1px solid #ffffff0d;flex-shrink:0;
+}
+#input{
+  flex:1;background:#16171c;border:1px solid #ffffff10;
+  border-radius:22px;padding:11px 16px;
+  color:var(--tx);font-size:15px;outline:none;
+  transition:border-color .2s;min-width:0;
+}
+#input:focus{border-color:var(--acc)}
+#input::placeholder{color:var(--mut)}
+button{
+  width:44px;height:44px;border-radius:50%;border:none;
+  background:var(--acc);color:#fff;cursor:pointer;
+  display:grid;place-items:center;flex-shrink:0;
+  transition:transform .12s,filter .2s;
+}
+button:hover{filter:brightness(1.1)}
+button:active{transform:scale(.9)}
+button svg{width:20px;height:20px}
+</style>
+</head>
+<body>
+
+<header>
+  <span class="dot"></span>
+  <b>Голосовой чат</b>
+  <small id="status">инициализация…</small>
+</header>
+
+<div id="chat">
+  <div class="msg in">Привет! Напиши что-нибудь — я озвучу твоё сообщение вслух 🔉</div>
+</div>
+
+<footer>
+  <input id="input" type="text" placeholder="Сообщение..." autocomplete="off">
+  <button id="send" aria-label="Отправить">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+         stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4 20-7z"/>
+    </svg>
+  </button>
+</footer>
+
+<!-- ResponsiveVoice как резервный вариант (если Web Speech недоступен) -->
+<script src="https://code.responsivevoice.org/responsivevoice.js?key=FREE"></script>
+
+<script>
+/* =========================================================
+   Озвучка:
+   1) Web Speech API    (Chrome, Edge, Safari — основной)
+   2) ResponsiveVoice   (резерв, если Web Speech не завёлся)
+   3) Визуальный сигнал (когда звука нет вообще)
+   ========================================================= */
+
+const chat   = document.getElementById('chat');
+const input  = document.getElementById('input');
+const send   = document.getElementById('send');
+const status = document.getElementById('status');
+
+const pad  = n => String(n).padStart(2,'0');
+const time = () => { const d = new Date(); return pad(d.getHours())+':'+pad(d.getMinutes()); };
+
+/* ---------- Доступные движки ---------- */
+const synth = window.speechSynthesis;
+const hasWebSpeech  = !!(synth && typeof SpeechSynthesisUtterance !== 'undefined');
+const hasResponsive = typeof responsiveVoice !== 'undefined';
+
+let currentEngine = hasWebSpeech ? 'webspeech'
+                  : hasResponsive ? 'responsive'
+                  : 'visual';
+
+status.textContent = 'озвучка: ' + currentEngine;
+
+let currentBubble = null;
+
+function stopAll(){
+  try { if (synth) synth.cancel(); } catch(e){}
+  try { if (hasResponsive) responsiveVoice.cancel(); } catch(e){}
+  if (currentBubble) currentBubble.classList.remove('speaking');
+}
+
+function markSpeaking(bubble){
+  if (currentBubble && currentBubble !== bubble) currentBubble.classList.remove('speaking');
+  currentBubble = bubble;
+  bubble.classList.add('speaking');
+}
+function markDone(bubble){
+  if (bubble) bubble.classList.remove('speaking');
+  if (currentBubble === bubble) currentBubble = null;
+  status.textContent = 'озвучка: ' + currentEngine;
+}
+
+/* ---------- Движок 1: Web Speech API ---------- */
+function speakWebSpeech(text, bubble, onFail){
+  if (!hasWebSpeech){ onFail(); return; }
+
+  const voices = synth.getVoices();
+
+  const doSpeak = () => {
+    try {
+      synth.cancel();
+      const u = new SpeechSynthesisUtterance(text);
+      u.lang = 'ru-RU';
+      u.rate = 1.05;
+      u.pitch = 1;
+
+      const ru = (synth.getVoices() || []).find(v => v.lang && v.lang.toLowerCase().startsWith('ru'));
+      if (ru) u.voice = ru;
+
+      let started = false;
+      u.onstart = () => { started = true; markSpeaking(bubble); };
+      u.onend   = () => { markDone(bubble); };
+      u.onerror = () => { if (!started) onFail(); else markDone(bubble); };
+
+      synth.speak(u);
+
+      // если через 700 мс речь не началась — движок не работает
+      setTimeout(() => {
+        if (!started && !synth.speaking) onFail();
+      }, 700);
+
+    } catch(e){ onFail(); }
+  };
+
+  if (voices && voices.length){
+    doSpeak();
+  } else {
+    // голоса иногда подгружаются асинхронно
+    let done = false;
+    const handler = () => {
+      if (done) return; done = true;
+      synth.onvoiceschanged = null;
+      doSpeak();
+    };
+    synth.onvoiceschanged = handler;
+    setTimeout(() => { if (!done){ done = true; synth.onvoiceschanged = null; doSpeak(); } }, 800);
+  }
+}
+
+/* ---------- Движок 2: ResponsiveVoice ---------- */
+function speakResponsive(text, bubble, onFail){
+  if (!hasResponsive){ onFail(); return; }
+  try {
+    let started = false;
+    responsiveVoice.speak(text, 'Russian Female', {
+      onstart: () => { started = true; markSpeaking(bubble); },
+      onend:   () => { markDone(bubble); },
+      onerror: () => { if (!started) onFail(); else markDone(bubble); }
+    });
+    setTimeout(() => { if (!started) onFail(); }, 900);
+  } catch(e){ onFail(); }
+}
+
+/* ---------- Движок 3: визуальный сигнал ---------- */
+function speakVisual(text, bubble){
+  currentEngine = 'visual';
+  status.textContent = 'озвучка недоступна — только визуально';
+  markSpeaking(bubble);
+  const ms = Math.min(4000, 350 + text.length * 45);
+  setTimeout(() => markDone(bubble), ms);
+}
+
+/* ---------- Цепочка фолбэков ---------- */
+function speak(text, bubble){
+  stopAll();
+
+  const fallbackToResponsive = () => {
+    currentEngine = 'responsive';
+    status.textContent = 'озвучка: responsive';
+    speakResponsive(text, bubble, () => speakVisual(text, bubble));
+  };
+
+  if (currentEngine === 'webspeech'){
+    speakWebSpeech(text, bubble, fallbackToResponsive);
+  } else if (currentEngine === 'responsive'){
+    speakResponsive(text, bubble, () => speakVisual(text, bubble));
+  } else {
+    speakVisual(text, bubble);
+  }
+}
+
+/* ---------- Сообщения ---------- */
+function escapeHtml(s){
+  return s.replace(/[&<>"']/g, c => (
+    {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]
+  ));
+}
+
+function sendMessage(){
+  const text = input.value.trim();
+  if (!text) return;
+
+  const msg = document.createElement('div');
+  msg.className = 'msg out';
+  msg.innerHTML = escapeHtml(text) + '<span class="time">' + time() + '</span>';
+  chat.appendChild(msg);
+  chat.scrollTop = chat.scrollHeight;
+
+  input.value = '';
+  input.focus();
+
+  speak(text, msg);
+}
+
+send.addEventListener('click', sendMessage);
+input.addEventListener('keydown', e => { if (e.key === 'Enter') sendMessage(); });
+
+/* прогрев Web Speech при первой загрузке */
+if (hasWebSpeech){
+  try { synth.getVoices(); synth.onvoiceschanged = () => synth.getVoices(); } catch(e){}
+}
+
+/* «прогрев» речи при первом касании — обходит автозапуск */
+let warmed = false;
+document.addEventListener('pointerdown', () => {
+  if (warmed) return;
+  warmed = true;
+  if (currentEngine === 'webspeech'){
+    try {
+      const u = new SpeechSynthesisUtterance(' ');
+      u.volume = 0; u.lang = 'ru-RU';
+      synth.speak(u);
+    } catch(e){}
+  }
+}, { once:true });
+</script>
+
+</body>
+</html>
